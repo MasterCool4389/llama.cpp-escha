@@ -1,4 +1,4 @@
-name: CI (CUDA, windows)
+name: CI (CUDA, windows) Nvidia
 
 on:
   workflow_dispatch:
