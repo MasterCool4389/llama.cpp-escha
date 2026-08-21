@@ -1,0 +1,67 @@
+name: CI (CUDA, windows)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  queue: max
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GGML_NLOOP: 3
+  GGML_N_THREADS: 1
+  LLAMA_ARG_LOG_COLORS: 1
+  LLAMA_ARG_LOG_PREFIX: 1
+  LLAMA_ARG_LOG_TIMESTAMPS: 1
+
+jobs:
+  cuda:
+    runs-on: windows-2022
+
+    permissions:
+      actions: write
+
+    strategy:
+      matrix:
+        cuda: ['12.4', '13.3']
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: release-windows-2022-x64-cuda-${{ matrix.cuda }}
+
+      - name: Install Cuda Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ matrix.cuda }}
+
+      - name: Install Ninja
+        id: install_ninja
+        run: |
+          choco install ninja
+
+      - name: Build
+        id: cmake_build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON
+
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+
+          cmake --build build --config Release -j %NINJA_JOBS%
+
+      - name: ccache-clear
+        uses: ./.github/actions/ccache-clear
+        with:
+          key: release-windows-2022-x64-cuda-${{ matrix.cuda }}
