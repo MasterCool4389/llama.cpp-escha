@@ -61,6 +61,16 @@ jobs:
 
           cmake --build build --config Release -j %NINJA_JOBS%
 
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cuda-windows-${{ matrix.cuda }}
+          path: |
+            build/bin/Release/*.exe
+            build/bin/Release/*.dll
+          if-no-files-found: error
+          retention-days: 7
+
       - name: ccache-clear
         uses: ./.github/actions/ccache-clear
         with:
