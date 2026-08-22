@@ -1,11 +1,11 @@
-name: CI (CUDA, windows) Nvidia
+name: CI (CUDA, Windows) Nvidia
 
 on:
   workflow_dispatch:
 
 concurrency:
   group: release
-  queue: max
+  cancel-in-progress: false
 
 env:
   GH_TOKEN: ${{ github.token }}
@@ -28,7 +28,6 @@ jobs:
 
     steps:
       - name: Clone
-        id: checkout
         uses: actions/checkout@v6
 
       - name: ccache
@@ -36,18 +35,28 @@ jobs:
         with:
           key: release-windows-2022-x64-cuda-${{ matrix.cuda }}
 
-      - name: Install Cuda Toolkit
+      - name: Install CUDA Toolkit
         uses: ./.github/actions/windows-setup-cuda
         with:
           cuda_version: ${{ matrix.cuda }}
 
-      - name: Install Ninja
-        id: install_ninja
+      - name: Show CUDA installation
+        shell: powershell
         run: |
-          choco install ninja
+          Write-Host "CUDA_PATH = $env:CUDA_PATH"
+
+          if ($env:CUDA_PATH) {
+            Write-Host "CUDA bin:"
+            Get-ChildItem "$env:CUDA_PATH\bin" |
+              Select-Object Name, Length
+          }
+
+      - name: Install Ninja
+        shell: powershell
+        run: |
+          choco install ninja -y
 
       - name: Build
-        id: cmake_build
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -61,17 +70,124 @@ jobs:
 
           cmake --build build --config Release -j %NINJA_JOBS%
 
+      - name: Package CUDA runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = Resolve-Path "build/bin/Release"
+
+          Write-Host "Output directory:"
+          Write-Host $output
+
+          # Find CUDA installation robustly.
+          $cudaRoot = $env:CUDA_PATH
+
+          if (-not $cudaRoot -or -not (Test-Path "$cudaRoot\bin")) {
+              Write-Host "CUDA_PATH unavailable. Searching standard CUDA locations..."
+
+              $cudaCandidates = @(
+                  "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3",
+                  "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2",
+                  "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1",
+                  "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0"
+              )
+
+              foreach ($candidate in $cudaCandidates) {
+                  if (Test-Path "$candidate\bin") {
+                      $cudaRoot = $candidate
+                      break
+                  }
+              }
+          }
+
+          if (-not $cudaRoot -or -not (Test-Path "$cudaRoot\bin")) {
+              Write-Error "Could not locate CUDA installation."
+              exit 1
+          }
+
+          Write-Host "Using CUDA installation:"
+          Write-Host $cudaRoot
+
+          $cudaBin = Join-Path $cudaRoot "bin"
+
+          # Copy CUDA runtime libraries used by ggml-cuda.
+          $cudaDlls = @(
+              "cudart64_13.dll",
+              "cublas64_13.dll",
+              "cublasLt64_13.dll"
+          )
+
+          foreach ($dll in $cudaDlls) {
+              $source = Join-Path $cudaBin $dll
+              $destination = Join-Path $output $dll
+
+              if (-not (Test-Path $source)) {
+                  Write-Error "CUDA DLL not found: $source"
+                  exit 1
+              }
+
+              Copy-Item $source $destination -Force
+
+              Write-Host "Copied $dll"
+          }
+
+      - name: Verify package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dir = Resolve-Path "build/bin/Release"
+
+          $required = @(
+              "llama-server.exe",
+              "llama-server-impl.dll",
+              "llama-cli.exe",
+              "llama-cli-impl.dll",
+              "llama.dll",
+              "llama-common.dll",
+              "ggml.dll",
+              "ggml-base.dll",
+              "ggml-cpu.dll",
+              "ggml-cuda.dll",
+              "cudart64_13.dll",
+              "cublas64_13.dll",
+              "cublasLt64_13.dll"
+          )
+
+          Write-Host ""
+          Write-Host "=== VERIFYING BUILD ==="
+          Write-Host ""
+
+          foreach ($file in $required) {
+              $path = Join-Path $dir $file
+
+              if (-not (Test-Path $path)) {
+                  Write-Error "MISSING: $file"
+                  exit 1
+              }
+
+              $size = (Get-Item $path).Length
+              Write-Host "OK: $file ($size bytes)"
+          }
+
+          Write-Host ""
+          Write-Host "=== CUDA DLLs ==="
+          Write-Host ""
+
+          Get-ChildItem $dir -Filter "*.dll" |
+              Where-Object {
+                  $_.Name -match "^(cudart|cublas|cublasLt).*\.dll$"
+              } |
+              Select-Object Name, Length
+
+          Write-Host ""
+          Write-Host "=== PACKAGE COMPLETE ==="
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-cuda-windows-${{ matrix.cuda }}
-          path: |
-            build/bin/Release/*.exe
-            build/bin/Release/*.dll
+          name: llama-cuda-windows-${{ matrix.cuda }}-escha-w2
+          path: build/bin/Release/*
           if-no-files-found: error
           retention-days: 7
-
-      - name: ccache-clear
-        uses: ./.github/actions/ccache-clear
-        with:
-          key: release-windows-2022-x64-cuda-${{ matrix.cuda }}
